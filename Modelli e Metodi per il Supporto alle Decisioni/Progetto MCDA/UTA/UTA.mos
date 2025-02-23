@@ -1,0 +1,832 @@
+model "Metodo UTA-STAR rivisto"
+uses "mmxprs", "mmive"; 
+
+!=============================================================================
+! Trova un modello lineare additivo standard applicando una versione rivista
+! del metodo UTA-STAR. Applica poi il modello ad un insieme S di alternative.
+! INPUT: SR.txt (reference set)
+!        S.txt  (insieme di alternative)
+! OUTPUT: range di pesi; modello (per punti); punteggi delle alternative
+!         i punteggi sono scritti sul file "Utility.txt"
+!-----------------------------------------------------------------------------
+! VERSIONE 29 OTTOBRE 2024
+! (-) grafici modificati per i criteri qualitativi
+! (-) i gap minimi tra gli estremi 1 e 0 e le utilità massima e minima sono
+!     una frazione di delta
+!=============================================================================
+
+parameters
+	DeltaSensitivity = 0.000001  ! DeltaMin iniziale, quasi nullo!
+end-parameters
+
+!=============================================================================
+! procedure "forward" e relative variabili globali di ritorno
+forward procedure Decompose(x: real, j: integer)
+forward procedure PlotCriteria(num: integer)
+
+declarations
+! variabili result GLOBALI usate dalla procedura Decompose
+! UNICI valori per cui, con IP intero e FP in [0,1], vale:
+!     x := Range(j,1) + (IP + FP) * L(j)
+IP: integer   ! ci sono IP intervalli completi a sinistra di x 
+FP: real      ! c'è una frazione di intervallo FP  a sinistra di x 
+end-declarations
+
+!=============================================================================
+! Dichiarazioni globali e lettura del file di input
+!=============================================================================
+declarations
+	file: string   
+	p: integer      
+	m: integer     
+end-declarations
+! nome e formato del file sono prefissati
+file := 'SR.txt'
+
+! lettura dimensioni
+initializations from file
+ p
+ m
+end-initializations
+
+!---------------------------------------------------------------
+! Strutture dati per il reference set, e lettura input
+!---------------------------------------------------------------
+declarations
+	! Sezione criteri
+Maximize: array(1..p) of boolean   
+Qualitative: array(1..p) of boolean   
+Range:  array(1..p,1..2) of real   
+   	! Sezione andamento UF
+IntervalNum: array(1..p) of integer  ! numero intervalli  
+Convex: array(1..p) of integer       ! andamento
+Rate: array(1..p) of integer  ! tasso di variazione della pendenza
+                              ! per l'andamento concavo/convesso 
+    ! sezione Reference Set (RS)
+WeakOrder: array(1..m) of integer      
+MCMatrix: array(1..m,1..p) of real    
+end-declarations
+
+initializations from file
+ Maximize
+ Qualitative
+ Range
+ IntervalNum
+ Convex
+ Rate
+ WeakOrder
+ MCMatrix
+end-initializations
+
+!-----------------------------------------
+! Check sui criteri dichiarati Qualitative
+!-----------------------------------------
+forall(j in 1..p | Qualitative(j) ) do
+  bot := floor(Range(j,1))   ! limite sinistro intero
+  top := ceil(Range(j,2))    ! limite destro intero
+  if ( bot <> Range(j,1) or top <> Range(j,2) ) then
+     ! Range qualitativo non intero!
+     writeln("*** Criterio qualitativo ", strfmt(j,1) )
+     writeln("*** Range fornito non intero!")
+     writeln("*** Programma terminato      ")
+     exit(1)
+  end-if
+  if ( top - bot > 20 ) then
+     ! Range qualitativo troppo ambpio!
+     writeln("*** Criterio qualitativo ", strfmt(j,1) )
+     writeln("*** Numero di intervalli maggiore di 20!")
+     writeln("*** Programma terminato      ")
+     exit(1)
+  end-if
+  if ( IntervalNum(j) <> top - bot ) then
+     writeln("*** Criterio qualitativo ", strfmt(j,1) ) 
+     writeln("*** Numero di intervalli fornito:   ", IntervalNum(j) )
+     IntervalNum(j) := top-bot
+     writeln("*** Numero di intervalli effettivo: ", IntervalNum(j) )    
+  end-if
+end-do
+
+!-----------------------------------------------
+! check sull'ordine debole definito da WeakOrder
+!-----------------------------------------------
+if ( WeakOrder(1) <> 1 ) then
+   writeln("*** Errore nell'array WeakOrder  ")
+   writeln("*** Prima posizione diversa da 1 ")
+   writeln("*** Programma interrotto         ")
+   exit(1)
+end-if
+forall(i in 2..m) do
+  if (  (WeakOrder(i) <> WeakOrder(i-1) + 1 ) and
+        ( WeakOrder(i) <> WeakOrder(i-1) )  ) then 
+       writeln("*** Errore nell'array WeakOrder")
+       writeln("*** Posizione non coerente: ", i )
+       writeln("*** Programma interrotto       ")
+       exit(1)
+  end-if
+end-do
+
+!-----------------------------------------
+! Check sui valori Rate
+!-----------------------------------------
+forall(j in 1..p) 
+  if ( (Rate(j) < 0) or (Rate(j) > 100) ) then 
+       writeln("*** Errore nell'array Rate")
+       writeln("*** Valore fuori range: ", Rate(j) )
+       writeln("*** Programma interrotto       ")
+       exit(1)
+  end-if
+
+!===============================================================
+! Strutture dati per il modello e relativa inizializzazione
+!===============================================================
+
+!---------------------------------------------------------------
+! Strutture dati per la decomposizione dei valori nel Ref. Set
+!---------------------------------------------------------------
+declarations
+L: array(1..p) of real              ! lunghezze intervalli
+MHP: array(1..m,1..p) of integer    ! decomposizione: indice           
+MFP: array(1..m,1..p) of real       ! decomposizione: resto   
+end-declarations
+
+forall(j in 1..p)  
+  if (Qualitative(j) ) then
+       L(j) := 1
+  else L(j) := ( Range(j,2) - Range(j,1) ) / IntervalNum(j)
+  end-if
+  
+forall(i in 1..m) do
+  forall(j in 1..p) do
+    Decompose(MCMatrix(i,j), j)
+    MHP(i,j) := IP
+    MFP(i,j) := FP
+  end-do
+end-do
+
+!---------------------------------------------------------------
+! Variabili per la memorizzazione delle Soluzioni
+!---------------------------------------------------------------
+declarations
+	SolSet: range   ! insieme di soluzioni
+    Points: range   ! insieme di punti (per criterio)
+	UFset: array(SolSet,1..p,Points) of real ! copia soluzioni
+	Weights: array(1..p) of real       ! peso di ogni criterio
+	SolNum: integer              ! numero di soluzioni trovate
+end-declarations
+
+!---------------------------------------------------------------
+! Parametri tecnici e funzionali del modello
+!---------------------------------------------------------------
+declarations
+! parametri tecnici 
+  DeltaMin: real                ! lower bound iniziale su delta
+  Ratio: array(1..p) of real    ! rapporto minimo tra w adiacenti
+  ! NEVER USED?!? PMAx: array(1..p) of integer  ! punto di massimo per la UF
+  PMin: array(1..p) of integer  ! punto di minimo per la UF
+  SGN: array(1..p) of integer   ! segno della componente interpolata
+  ! Per rispettare le relazioni di preferenza il valore di utilità deve essere
+  ! incrementato complessivamente di Steps * delta; dunque vale delta * Steps <= 1, 
+  ! quindi il valore massimo di delta è 1 / Steps
+  Steps: real                   ! 
+  ! l'utilità della prima (ultima) alternativa differisce da 1 (0) di una frazione
+  ! GapUp = KUp/p (GapDown = KDown / p) di delta, dove KUp (KDown) è il numero di 
+  ! criteri per i quali la sua valutazione è diversa dalla migliore (peggiore).
+  ! Le valutazioni migliori e peggiori sono gli estremi dell'intervallo, scritti
+  ! nell'array Range, ovviamente tenendo conto della direzione del criterio!
+  GapUp: real
+  GapDown: real
+end-declarations
+
+! calcolo dei coefficienti GapUp e GapDown
+GapUp := 1
+GapDown := 1
+forall (j in 1..p) 
+  if ( Maximize(j) ) then 
+     if( MCMatrix(1,j) = Range(j,2) ) then GapUp -= 1/p
+     end-if
+     if( MCMatrix(m,j) = Range(j,1) ) then GapDown -= 1/p
+     end-if
+  else if ( MCMatrix(1,j) = Range(j,1) ) then GapUp -= 1/p
+       end-if
+       if( MCMatrix(m,j) = Range(j,2) ) then GapDown -= 1/p
+       end-if
+  end-if
+    
+! Steps: numero di "salti" tra la prima e l'ultima alternativa, più 
+! i valori frazionari GapUp e GapDown
+! NOTA: il controllo su WeakOrder è stato svolto in precedenza
+Steps := GapUp + GapDown + WeakOrder(m) - WeakOrder(1)
+! Il limite inferiore iniziale DeltaMin sulla variabile Delta è
+! fissato al parametro DeltaSensitivity, molto piccolo
+DeltaMin := DeltaSensitivity  
+
+! per ogni criterio j, Ratio(j) fornisce un rapporto minimo >= 1 tra due 
+! w consecutivi; quale dei due w sia il maggiore dipende dall'andamento
+! prescelto e dalla direzione del vincolo.
+! L'array Rate in input fornisce il valore 100 * ( Ratio(j) - 1 ), cioè
+! l'incremento percentuale di pendenza richiesto (intero)
+forall(j in 1..p) Ratio(j) := 1 + Rate(j)/100
+
+! per ogni criterio j, PMin(j) e PMax(j) sono gli indici dei punti
+! di minimo (zero) e massimo (uno) per la UF (normalizzata)
+forall(j in 1..p) do
+  if ( Maximize(j) ) then
+     PMin(j) := 0
+     PMax(j) := IntervalNum(j)
+     SGN(j)  := 1
+  else
+     PMax(j) := 0
+     PMin(j) := IntervalNum(j)
+     SGN(j)  := -1
+  end-if    	
+end-do
+
+
+!===============================================================
+! Definizione del modello di Programmazione Lineare
+!===============================================================
+declarations
+! variabili
+  V: array(1..p,Points) of mpvar   
+  w: array(1..p,Points) of mpvar   
+  SigmaPlus: array(1..m) of mpvar  
+  SigmaMinus: array(1..m) of mpvar 
+  Vprime: array(1..m) of mpvar     
+  NormaUno: mpvar
+  NormaInf: mpvar
+  delta: mpvar
+! valori limite, usati per delimitare il poliedro da esplorare
+  BoundNormaUno: real    ! UB sulla norma 1
+  BoundNormaInf: real    ! UB sulla norma inf.
+  DeltaMax: real         ! UB sul valore di delta
+end-declarations
+
+
+!---------------------------------------------------------------
+! INSTANZIAZIONE VARIABILI
+!---------------------------------------------------------------
+forall(j in 1..p)
+  forall(P in 0..IntervalNum(j)) do
+    create(V(j,P))
+    create(w(j,P))
+  end-do
+
+forall(i in 1..m) do
+  create ( SigmaPlus(i) )
+  create ( SigmaMinus(i) )
+  create ( Vprime(i) )
+end-do
+
+!---------------------------------------------------------------
+! VINCOLI
+!---------------------------------------------------------------
+
+!---------------------------------------------------------------
+! relazione tra V e w
+forall(j in 1..p)
+ if ( Maximize(j) ) then 
+  ! criterio da massimizzare
+  V(j,0) = 0
+  forall(P in 1..IntervalNum(j) ) 
+    w(j,P) = V(j,P) - V(j,P-1) 
+  else
+  ! criterio da minimizzare
+  V(j,IntervalNum(j)) = 0
+  forall(P in 1..IntervalNum(j) ) 
+    w(j,P) =  V(j,P-1) - V(j,P) 
+ end-if
+
+!---------------------------------------------------------------
+! normalizzazione globale del modello 
+SUM(j in 1..p) V( j, PMax(j) ) = 1
+
+!---------------------------------------------------------------
+! vincoli (eventuali) sull'andamento delle FU
+forall(j in 1..p) 
+  if ( Maximize(j) ) then
+    !--- criterio da massimizzare ---------------------
+    if (Convex(j) > 0) then
+       ! andamento concavo-convesso: parte concava
+       forall(P in 1..IntervalNum(j) | P <= Convex(j) ) 
+         Ratio(j) * w(j,P) <= w(j,P-1) 
+       ! andamento concavo-convesso: parte convessa
+       forall(P in 1..IntervalNum(j) | P > Convex(j) ) 
+         w(j,P) >= w(j,P-1) * Ratio(j)
+    end-if
+    if (Convex(j) < 0) then
+       ! andamento convesso-concavo: parte convessa
+       forall(P in 1..IntervalNum(j) | P <= -Convex(j) ) 
+         w(j,P) >= w(j,P-1) * Ratio(j)
+       ! andamento convesso-concavo: parte concava
+       forall(P in 1..IntervalNum(j) | P > -Convex(j) ) 
+         Ratio(j) * w(j,P) <= w(j,P-1)  
+    end-if
+  else
+    !--- criterio da minimizzare ----------------------
+      if (Convex(j) > 0) then
+       ! andamento concavo-convesso: parte concava
+       forall(P in 1..IntervalNum(j) | P <= Convex(j) ) 
+         w(j,P) >= w(j,P-1) * Ratio(j)
+       ! andamento concavo-convesso: parte convessa
+       forall(P in 1..IntervalNum(j) | P > Convex(j) ) 
+         Ratio(j) * w(j,P) <= w(j,P-1) 
+    end-if
+    if (Convex(j) < 0) then
+       ! andamento convesso-concavo: parte convessa
+       forall(P in 1..IntervalNum(j) | P <= -Convex(j) ) 
+         Ratio(j) * w(j,P) <= w(j,P-1)  
+       ! andamento convesso-concavo: parte concava
+       forall(P in 1..IntervalNum(j) | P > -Convex(j) ) 
+         w(j,P) >= w(j,P-1) * Ratio(j)
+    end-if  	
+  end-if
+
+
+!---------------------------------------------------------------
+! Definizione della funzione valore approssimata Vprime
+! NOTA si evitano problemi con il limite destro degli intervalli
+!      perché se MFP(i,j)=0 allora non si usa l'indice MHP(i,j)+1
+forall(i in 1..m) do
+   Vprime(i)  =  ( SUM(j in 1..p) V( j, MHP(i,j) )  ) +
+                 ( SUM(j in 1..p | MFP(i,j) > 0 ) MFP(i,j) * w( j, MHP(i,j)+1 ) * SGN(j) ) +
+                 SigmaMinus(i) - SigmaPlus(i)
+end-do
+
+!---------------------------------------------------------------
+! vincoli derivanti dall'ordine debole
+forall(i in 2..m) do
+  if ( WeakOrder(i) = WeakOrder(i-1) + 1 ) then
+       Vprime(i-1) - Vprime(i) >= delta
+  else Vprime(i-1) = Vprime(i)
+  end-if
+end-do
+! vincoli su prima e ultima alternativa
+1 - Vprime(1) >= GapUp * delta
+Vprime(m) >= GapDown * delta
+! lower bound iniziale su delta
+delta >= DeltaMin
+
+!---------------------------------------------------------------
+! definizione delle norme
+NormaUno = SUM(i in 1..m) ( SigmaPlus(i) + SigmaMinus(i) )
+forall(i in 1..m) do
+  NormaInf >= SigmaPlus(i)
+  NormaInf >= SigmaMinus(i)
+end-do
+
+
+!===============================================================
+! Soluzione del modello per diverse F.O, e conseguente
+! definizione dei limiti del poliedro da esplorare;
+! memorizzazione e/o output dei risultati parziali
+!===============================================================
+
+!---------------------------------------------------------------
+! Minimizzazione norma uno
+! minimize(NormaUno)
+minimize(NormaUno + 0.001 * NormaInf)
+writeln
+writeln("*****************************")
+writeln("MINIMO NormaUno: ", getsol(NormaUno) )
+BoundNormaInf := getsol(NormaInf)
+writeln("NormaInf: ",BoundNormaInf)
+writeln("*****************************")
+!---------------------------------------------------------------
+
+!---------------------------------------------------------------
+! Minimizzazione norma infinito (maX errori)
+minimize(NormaInf + (0.001/m) * NormaUno )
+writeln
+writeln("*****************************")
+writeln("MINIMO NormaInf: ", getsol(NormaInf) )
+BoundNormaUno := getsol(NormaUno)
+writeln("NormaUno: ",BoundNormaUno)
+writeln("*****************************")
+!---------------------------------------------------------------
+
+!===============================================================
+! WARNING si segnala il caso di errori non nulli 
+!===============================================================
+if ( BoundNormaUno > DeltaSensitivity) then
+   writeln
+   writeln("**********************************************")
+   writeln("WARNING - errori di approssimazione non nulli!")
+   writeln("**********************************************")
+end-if
+!===============================================================
+
+!===============================================================
+! inserimento bound sulle norme 
+!===============================================================
+NormaUno <= BoundNormaUno
+NormaInf <= BoundNormaInf
+!===============================================================
+
+!===============================================================
+! Massimizzazione del valore "delta"
+!===============================================================
+maximize(delta)
+DeltaMax:= getobjval
+writeln
+writeln("*****************************")
+writeln("delta TEORICO: ", strfmt( (1/Steps), 1, 4 ) )
+writeln("delta MASSIMO: ", strfmt( DeltaMax, 1, 4 )  )
+POMT := 100*DeltaMax*Steps
+writeln("Looseness:     ", strfmt(POMT,3,0), "%" )
+writeln("NormaUno: ", getsol(NormaUno) )
+writeln("NormaInf: ", getsol(NormaInf) )
+writeln("*****************************")
+
+!===============================================================
+! ESPLORAZIONE DEL POLIEDRO E CALCOLO DEL MODELLO FINALE
+!===============================================================
+
+!-------------------------------------------------------------
+! azzeramento del contatore delle soluzioni
+SolNum := 0
+
+!-------------------------------------------------------------
+! Dichiarazioni nuove variabili necesarie per questa fase
+declarations
+	newdelta: real
+	MinMax:    array(1..p, 1..2) of real  ! min/max max value
+	MinMaxSum: array(1..p, 1..2) of real  ! min/max sum of values
+	! NEVER USED?!? ValoreMedioPunto: real
+	IndiceModello: integer
+	IndiceModelloNorm: integer
+end-declarations
+
+!-------------------------------------------------------------
+! Input del nuovo limite inferiore su delta (eventuale)
+newdelta := DeltaMax+1;
+while(newdelta >= DeltaMax ) do
+  writeln("========================================")
+  writeln("Inserire il nuovo valore minimo di delta")
+  writeln("(minore di ", strfmt( DeltaMax, 1, 4), ")" )
+  read(newdelta)
+end-do	
+! Nuovo vincolo (eventualmente ridondante) su delta
+delta >= newdelta
+
+!-------------------------------------------------------------
+! determinazione del massimo e minimo peso per ogni criterio
+! e memorizzazione delle corrispondenti UF in UFset
+forall (j in 1..p) do
+	! Minimizzazione massimo peso
+	minimize(V(j,PMax(j)))
+	MinMax(j,1):= getobjval
+	SolNum += 1
+	forall (i in 1..p) do
+ 		forall(P in 0..IntervalNum(i)) do
+    		UFset(SolNum,i,P) := getsol(V(i,P))
+ 		end-do
+ 	end-do
+	! Massimizzazione massimo peso
+	maximize(V(j,PMax(j)))
+	MinMax(j,2):= getobjval
+	SolNum += 1
+ 	forall (i in 1..p) do
+ 		forall(P in 0..IntervalNum(i)) do
+    		UFset(SolNum,i,P) := getsol(V(i,P))
+ 		end-do
+ 	end-do
+end-do
+
+!-------------------------------------------------------------
+! output del massimo e minimo peso per ogni criterio
+writeln
+writeln("Range per il valore dei pesi di ciascun criterio:")
+forall (j in 1..p) do
+	writeln( "Criterio ", j, ": [ ", strfmt(MinMax(j,1),0,3) , " , ", 
+		strfmt(MinMax(j,2),0,3), " ]")
+end-do
+
+!-------------------------------------------------------------
+! determinazione del massimo e minimo integrale (somma dei
+! valori puntuali trovati) per ogni criterio, memorizzazione
+! delle corrispondenti UF in UFset
+forall (j in 1..p) do
+	! Minimizzazione somma valori di V_j
+	minimize( SUM(P in 1..IntervalNum(j)) V(j,P) )
+	MinMaxSum(j,1):= getobjval
+	SolNum += 1
+	forall (i in 1..p) do
+ 		forall(P in 0..IntervalNum(i)) do
+    		UFset(SolNum,i,P) := getsol(V(i,P))
+ 		end-do
+ 	end-do
+	! Massimizzazione somma valori di V_j
+	maximize( SUM(P in 1..IntervalNum(j)) V(j,P) )
+	MinMaxSum(j,2):= getobjval
+	SolNum += 1
+ 	forall (i in 1..p) do
+ 		forall(P in 0..IntervalNum(i)) do
+    		UFset(SolNum,i,P) := getsol(V(i,P))
+ 		end-do
+ 	end-do
+end-do
+
+!-------------------------------------------------------------
+! output del massimo e minimo integrale per ogni criterio
+writeln
+writeln("Range per il valore medio di ciascun criterio:")
+forall (j in 1..p) do
+    minmean := MinMaxSum(j,1) / IntervalNum(j)
+    maxmean := MinMaxSum(j,2) / IntervalNum(j)
+	writeln( "Criterio ", j, ": [ ", strfmt(minmean,0,3) , " , ", 
+		strfmt(maxmean,0,3), " ]")
+end-do
+
+writeln
+writeln("=====================================================")
+writeln("=               Modello Additivo                    =")
+writeln("=====================================================")
+	
+!-------------------------------------------------------------
+! Calcolo del modello additivo complessivo (come media dei
+! modelli calcolati in precedenza)
+! (1) modello non normalizzato
+IndiceModello:= SolNum + 1
+forall (j in 1..p) do
+	forall(P in 0..IntervalNum(j)) do
+		VSum := sum(S in SolSet | S < IndiceModello ) UFset(S,j,P) 
+		UFset(IndiceModello,j,P) := VSum / SolNum
+	end-do
+end-do
+! (2) calcolo e memorizzazione pesi
+writeln
+writeln("Peso di ciascun criterio:")
+forall (j in 1..p) do
+	Weights(j) := UFset(IndiceModello, j, PMax(j))
+	writeln ("Criterio ", j, ": ", strfmt(Weights(j),0,3))
+end-do
+! (3) normalizzazione 
+IndiceModelloNorm:= IndiceModello+1
+forall (j in 1..p) do
+	forall(P in Points) do
+	    if(Weights(j)>0) then
+		  UFset(IndiceModelloNorm,j,P):=UFset(IndiceModello,j,P)/Weights(j)
+		else 
+		  UFset(IndiceModelloNorm,j,P):=0
+		end-if
+	end-do
+end-do
+
+!-------------------------------------------------------------
+! stampa delle UF dei vari criteri (per punti)
+writeln
+writeln("--- UF normalizzate -------------")
+forall(j in 1..p) do
+  writeln("*** Criterio ", j)
+  x := Range(j,1)
+  forall(P in 0..IntervalNum(j)) do
+    writeln("    Punto ", P, " \t", strfmt(UFset(IndiceModelloNorm, j, P),0,3) )
+      x := x + L(j)
+  end-do
+end-do
+
+!===============================================================
+! Output del modello completo su file Model.txt
+!-------------------------------------------------------------
+! Open  file
+fopen('Model.txt',F_OUTPUT)
+writeln("*** Complete additive model ***")
+! stampa pesi
+writeln("--- Criteria weights")
+forall (j in 1..p) do
+	writeln ( strfmt(j,2), " \t", strfmt(Weights(j),0,3) )
+end-do
+! stampa delle UF dei vari criteri (per punti)
+writeln("--- Normalized UF")
+forall(j in 1..p) do
+  writeln("Criterion ", j)
+  ! first check if decimal digits are necessary
+  ! FPart: sum of fractional parts in input data
+  FPart := ( L(j) - floor( L(j) ) ) + 
+           ( Range(j,1) - floor(Range(j,1)) ) +
+           ( Range(j,2) - floor(Range(j,2)) )
+  if ( FPart > 0.0001 ) then
+  ! fractional parts are NOT considered to bo zero
+       DN := 4
+  else DN := 0  ! fractional parts are considered to be zero
+  end-if
+  ! print breakpoint coordinates
+  x := Range(j,1) ! first breakpoint: left range border
+  forall(P in 0..IntervalNum(j)) do
+    y := UFset(IndiceModelloNorm, j, P)
+    writeln( strfmt(x,15,DN),  " \t", strfmt( y , 6, 3) )
+    x := x + L(j) ! next breakpoint
+  end-do
+end-do
+!Close the file
+fclose(F_OUTPUT)
+!-------------------------------------------------------------
+! Fine output del modello completo su file Model.txt
+!===============================================================
+
+!===============================================================
+! Output grafico interattivo del modello (plot delle UF)
+PlotCriteria(IndiceModelloNorm)
+
+!===============================================================
+! Applicazione del modello ai dati complessivi
+!===============================================================
+
+declarations
+	Crit: integer
+	n: integer
+	fileS: string
+end-declarations
+
+fileS := "S.txt"
+initializations from fileS
+	n
+	Crit
+end-initializations
+
+! dichiarazione variabili
+declarations
+S: array(1..n,1..Crit) of real
+HU: array(1..n,1..Crit) of integer          
+FU: array(1..n,1..Crit) of real 
+U: array(1..n,1..Crit) of real
+Punteggio: array(1..n) of real
+end-declarations
+
+! lettura file
+initializations from fileS
+	S
+end-initializations
+
+! Calcolo decomposizione 
+forall(i in 1..n) do
+  forall(j in 1..Crit) do
+    Decompose(S(i,j), j)
+    HU(i,j) := IP
+    FU(i,j) := FP
+  end-do
+end-do
+
+! calcolo valori di utilità
+forall (i in 1..n) do
+	forall (j in 1..Crit) do
+		if (FU(i,j)>0) then
+		    U(i,j) := UFset(IndiceModelloNorm, j, HU(i,j))+
+			          FU(i,j)*( UFset(IndiceModelloNorm, j, HU(i,j)+1) - 
+			          UFset(IndiceModelloNorm, j, HU(i,j)))
+		else U(i,j):= UFset(IndiceModelloNorm, j, HU(i,j))
+			end-if	
+	end-do
+end-do
+
+! stampa valori di utilità
+writeln
+writeln("-------------------------------------------------")
+writeln("Punteggio delle singole alternative")
+! Calcolo Utilità alternative
+forall(i in 1..n) do
+	Punteggio(i):= SUM(j in 1..Crit) ( U(i,j)*Weights(j) )
+	writeln("Alternativa ",i, "\tvalore: ", strfmt(Punteggio(i),0,3))
+end-do
+
+! Scrittura valori di utilità su un file di testo
+! Open  file
+fopen('Utility.txt',F_OUTPUT)
+! write utilities
+forall(i in 1..n) writeln(strfmt(Punteggio(i),0,3))
+!Close the file
+fclose(F_OUTPUT)
+
+!===============================================================
+! FINE MODELLO
+!===============================================================
+
+!===============================================================
+! Implementazione di procedure e funzioni
+!===============================================================
+
+!---------------------------------------------------------------
+procedure Decompose(vj: real, j: integer)
+
+declarations
+x: real          
+EPSfloor : real  
+EPSrem : real    
+end-declarations
+
+! parametri di precisione numerica
+EPSfloor := 0.00001   ! tolleranza per l'operazione "floor"
+EPSrem := 0.001       ! minimo valore di FP
+
+if ( (j<1) or (j>p) ) then
+   writeln("Decompose: criterio non esistente ", j)
+   exit(1)
+else if ( (vj < Range(j,1) ) or (vj > Range(j,2) ) ) then
+        writeln("Decompose: criterio ", j)
+        writeln("           valore fuori range ", vj)
+        exit(1)
+     end-if
+end-if
+
+if ( Qualitative(j) ) then
+   IP :=  round( vj - Range(j,1) )
+   FP := 0 ! parte frazionaria nulla
+else
+   	x := vj - Range(j,1)
+    IP := floor( x / L(j) + EPSfloor )
+    FP := ( x / L(j) ) -  IP
+    if ( FP < EPSrem ) 
+    then FP := 0
+    end-if
+end-if
+  
+end-procedure
+! END procedure Decompose --------------------------------------
+
+
+procedure PlotCriteria(num: integer)
+	declarations
+    !--- strutture dati per plot della soluzione
+    blc: real                       ! bottom left corner of current square
+    Il: real                        ! interval length for criterion c
+    plot: array(0..7) of integer    ! output grafico: numeri IVE dei grafici
+end-declarations
+
+IVEerase
+plot(7) := IVEaddplot("background",IVE_WHITE)
+plot(0) := IVEaddplot("axes",IVE_BLACK)
+plot(1) := IVEaddplot("UF",IVE_RED)
+plot(3) := IVEaddplot("weights",IVE_BLUE)
+
+(!
+plot(2) := IVEaddplot("LABEL", IVE_RGB(122,255,255)))
+!)
+
+! white background
+IVEdrawrectangle(plot(7), -0.2, -0.2, p * 1.2, 1.1)
+! skip zoom 
+! IVEzoom( 0, 0 , p, 1 )
+
+blc := 0
+forall(c in 1..p) do
+  ! black frame and diagonal
+  IVEdrawline(plot(0), blc, 0, blc, 1  )
+  IVEdrawline(plot(0), blc, 0, blc+1, 0  )
+  IVEdrawline(plot(0), blc, 1, blc+1, 1   )
+  IVEdrawline(plot(0), blc+1, 0, blc+1, 1   )
+  ! write criterion number
+  IVEdrawlabel(plot(0), blc+0.5, -0.1 ,"Criterio"+ strfmt(c,3))
+  
+  if ( Qualitative(c) = false ) then 
+     ! compute horizontal interval length
+       Il := 1 / IntervalNum(c)
+       ! draw diagonal 
+       if (Maximize(c)) then
+          IVEdrawline(plot(0), blc, 0, blc+1, 1  )
+          else  IVEdrawline(plot(0), blc, 1, blc+1, 0  )
+       end-if
+       ! plot criterion UF
+       h := blc
+       forall (P in 1..IntervalNum(c) ) do
+         ! plot segment P
+         IVEdrawline(plot(1), h, UFset(num, c, P-1), h+Il, UFset(num, c, P) )
+         ! plot mark on horizontal axis
+         IVEdrawline(plot(0), h, 0.02, h, -0.02 )
+         ! shift h right
+         h := h + Il
+       end-do
+  else
+  	  ! compute horizontal bar  length
+      Il := 1 / ( 2*IntervalNum(c) + 1 )
+      ! plot criterion UF
+      h := blc
+      forall (P in 0..IntervalNum(c) ) do
+        ! plot vertical bar P
+        IVEdrawline(plot(1), h, 0, h, UFset(num, c, P) )
+        IVEdrawline(plot(1), h+Il, 0, h+Il, UFset(num, c, P) )
+        IVEdrawline(plot(1), h, UFset(num, c, P), h+Il, UFset(num, c, P) )
+        !IVEdrawlabel(plot(7), h + Il/2, -0.05 , strfmt(P,0) )
+        !IVEdrawrectangle(plot(1), h, 0, h+Il, UFset(num, c, P) )
+        ! shift h right
+        h := h + 2*Il
+      end-do
+      ! shift back h to right edge of the plot box
+      h := h - Il
+  end-if
+  
+  ! plot and write criterion weight
+  IVEdrawrectangle(plot(3), h, 0, h+0.1, Weights(c) )
+  IVEdrawlabel(plot(3), blc+1, -0.1 , strfmt(Weights(c),5,3) )
+
+  ! next square
+  blc := blc + 1.2
+  
+end-do ! forall criteria
+
+end-procedure
+
+
+end-model
+!===============================================================
+!===============================================================
+

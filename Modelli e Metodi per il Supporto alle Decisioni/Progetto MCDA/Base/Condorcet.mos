@@ -1,0 +1,127 @@
+model "Calcolo della Relazione di Condorcet"
+uses "mmxprs";
+!=============================================================================
+! Riceve in ingresso una matrice MCDA (con le sue dimensioni) e un vettore che
+! fornisce peso e direzione dei criteri: il peso dei criteri di minimizzazione
+! viene moltiplicato per -1.
+! Stampa una matrice M che descrive i risultati dei confronti a coppie operati
+! dal metodo di Condorcet (adattato alla MCDA):
+! (*) M(i,j)=1 se i batte j
+! (*) M(i,j)=0 se j batte i
+! (*) M(i,j)=2 se i e j sono alla pari
+! (*) M(i,i)=2 su assume che i sia alla pari con se stessa
+!=============================================================================
+! Revisione 17/9/24 (eseguibile su Workbench)
+!=============================================================================
+
+!=============================================================================
+! procedure "forward"
+forward procedure Condorcet
+forward procedure PrintMatrix(M:array(range,range) of integer, title: string, r: integer, c: integer)
+!=============================================================================
+! Dichiarazioni globali e lettura del file di input
+!=============================================================================
+declarations
+	file: string
+	n: integer      ! numero di alternative
+	m: integer      ! numero di criteri
+end-declarations
+
+! lettura da terminale del nome del file; il formato DEVE essere ASCII
+writeln
+writeln("Fornire il nome del file (senza suffisso .txt)")
+read(file)
+file := 'MCDA.txt'
+writeln
+
+initializations from file
+ n   !numero di righe
+ m   !numero di criteri
+end-initializations
+
+declarations
+! input
+MCMatrix: array(1..n,1..m) of real    ! matrice MCDA
+Weight: array(1..m) of real           ! pesi
+! output
+C: array(1..n,1..n) of integer        ! relazione binaria di Condorcet
+end-declarations
+
+initializations from file
+ MCMatrix
+ Weight
+end-initializations
+
+!=============================================================================
+! INIZIO MAIN
+!=============================================================================
+
+Condorcet
+PrintMatrix(C,"Relazione di Condorcet", n, n)
+
+!===============================================================
+! FINE "MAIN"
+!===============================================================
+
+!---------------------------------------------------------------
+! Metodo di Condorcet
+!---------------------------------------------------------------
+procedure Condorcet
+    forall (i in 1..n-1) do
+     forall (j in i+1..n) do
+      cont := 0.0;
+      forall(h in 1..m) do
+      if(MCMatrix(i,h) > MCMatrix(j,h))  then
+           cont += Weight(h);
+           else if (MCMatrix(i,h) < MCMatrix(j,h))  then
+                    cont -= Weight(h);
+                end-if
+           end-if
+      end-do   ! forall(h in 1..m)
+      if (cont > 0) then
+        C(i,j):=1;
+        C(j,i):=0;
+      else if(cont < 0) then
+        	C(j,i):=1;
+        	C(i,j):=0;
+           else
+        	C(j,i):=2;
+        	C(i,j):=2;
+           end-if
+      end-if
+     end-do   ! forall (j in i+1..n)
+    end-do   ! forall (i in 1..n-1)
+    forall (i in 1..n) C(i,i) := 2  ! fill diagonal
+end-procedure ! Condorcet
+
+!---------------------------------------------------------------
+! Stampa matrice generica
+!---------------------------------------------------------------
+procedure PrintMatrix(M: array(range,range) of integer, title: string, r: integer, c: integer)
+	writeln(title)
+	write("\t")
+	forall(i in 1..c) do
+		write(strfmt(i,8) )
+	end-do
+	writeln
+	forall(i in 1..(8+c*8)) do
+		write("-")
+	end-do
+	writeln
+	forall (i in 1..r) do
+		write(i,")\t")
+		forall(j in 1..c) do
+			write(strfmt(M(i,j),8))
+		end-do
+		writeln
+	end-do
+	writeln
+end-procedure
+
+end-model
+
+
+
+
+
+

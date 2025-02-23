@@ -1,0 +1,178 @@
+model "Calcolo del Tau di Kendall"
+
+!=============================================================================
+! Riceve in ingresso due o pi� ordinamenti (array di posizioni in classifica)
+! e fornisce in output una matrice (simmetrica) Tau, in cui Tau[h,k] � il Tau
+! di Kendall tra le classifiche h e k.
+! La gestione dei pareggi avviene considerando una coppia:
+!  - concorde (contributo +1) se pareggia in entrambe le classifiche 
+!  - persa (contributo +0) se pareggia in una classifica ma non nell'altra 
+! Fornisce inoltre una matrice simmetrica che in posizione (h,k) contiene la
+! frazione di coppie perse nel confronto tra le classifiche h e k
+! NOTA: Tau(h,k)=1 se h e k sono uguali, ma  se h e/o k contengono pareggi
+!       allora Tau(h,k) > -1
+! INPUT CHECK: il programma si interrompe se una delle colonne della matrice 
+!       in input non definisce un ordinamento.
+! 
+! Revisione 2023
+!=============================================================================
+
+!=============================================================================
+! procedure "forward" 
+forward procedure ComputeTau
+! procedura di supporto
+forward procedure PrintMatrix(M:array(range,range) of real, title: string, r: integer, c: integer) 
+
+!=============================================================================
+! Dichiarazioni globali e lettura del file di input
+!=============================================================================
+declarations
+	file: string   
+	n: integer      ! numero di alternative
+	o: integer      ! numero di ordinamenti
+end-declarations
+
+! il nome del file pu� cambiare, ma il formato deve essere ASCII
+file := 'Ordini.txt'
+
+! lettura dimensioni
+initializations from file
+ n
+ o
+end-initializations
+
+!---------------------------------------------------------------
+! Strutture dati per la matrice MCDA, e lettura input
+!---------------------------------------------------------------
+declarations
+  ! input
+  OrderMatrix: array(1..n,1..o) of real    ! matrice degli ordinamenti
+  ! output variables
+  Tau:  array(1..o,1..o) of real           ! Matrice Tau
+  LostPairs: array(1..o,1..o) of real          ! conteggio coppie utili
+end-declarations
+
+initializations from file
+  OrderMatrix
+end-initializations
+
+!=============================================================================
+! FINE Dichiarazioni globali e lettura del file di input
+!=============================================================================
+
+!---------------------------------------------------------------
+! Check di consistenza degli ordini in ongresso
+!---------------------------------------------------------------
+Gauss := (n*(n+1))/2
+forall (r in 1..o) do
+  tot := sum(i in 1..n) OrderMatrix(i,r)
+  rem := sum(i in 1..n) ( (2 * OrderMatrix(i,r) ) - floor( ( 2 * OrderMatrix(i,r) ) )  )
+  if ( (tot <> Gauss) or (rem > 0) ) then
+     write("Column ", r, " is not an order: ")
+     if ( (rem > 0) ) then
+        writeln("entries are not rank positions")
+     else 
+        writeln(" sum of entries is ", tot, " instead of ", Gauss)
+     end-if
+     exit(1)
+  end-if
+end-do
+writeln
+
+!=============================================================================
+! INIZIO MAIN
+!=============================================================================
+
+ComputeTau
+
+PrintMatrix(Tau, "Tau Matrix", o, o )
+
+PrintMatrix(LostPairs, "Lost Pairs Ratio ", o, o )
+
+!===============================================================
+! FINE "MAIN"
+!===============================================================
+
+!===============================================================
+! Implementazione di procedure e funzioni
+!===============================================================
+
+!---------------------------------------------------------------
+! Calcolo della matrice Tau
+!---------------------------------------------------------------
+procedure ComputeTau
+  declarations
+  	  den: real 	 
+  end-declarations
+  den := n *(n-1) / 2
+
+  writeln("Procedure ComputeTau")
+  writeln
+
+  forall (r in 1..o-1)do
+   forall(t in r+1..o)do
+    ! confronto la classifica r con la classifica t
+    Tau(r,t):=0   ! dato sulla diagonale non significativo
+    LostPairs(r,t):=0
+    ! conteggio delle coppie concordanti e discordanti
+    forall (i in 1..n-1) do
+     forall (j in i+1..n) do
+      pr := ((OrderMatrix(i,r)- OrderMatrix(j,r))*( OrderMatrix(i,t)- OrderMatrix(j,t)))
+      if( pr < 0) then
+           Tau(r,t):= Tau(r,t)-1   ! coppia discorde
+      else if (pr > 0) then
+              Tau(r,t):=Tau(r,t)+1    ! coppia concorde
+           else if ( (OrderMatrix(i,r)- OrderMatrix(j,r)) = ( OrderMatrix(i,t)- OrderMatrix(j,t)) ) then
+                   Tau(r,t):=Tau(r,t)+1    ! coppia concorde (pari merito)
+                else   LostPairs(r,t) += 1   ! coppia persa
+                end-if 
+           end-if                
+      end-if 
+     end-do
+    end-do   	
+    Tau(r,t) := Tau(r,t)/den
+    LostPairs(r,t) := LostPairs(r,t)/den
+    Tau(t,r) := Tau(r,t)
+    LostPairs(t,r) := LostPairs(r,t)
+   end-do
+  end-do  
+  
+! sulla diagonale (non significativa) i confronti sono tra una classifica e se stessa
+forall (r in 1..o)do
+   Tau(r,r):=1        
+   LostPairs(r,r):=0
+end-do
+
+end-procedure ! ComputeTau
+
+!---------------------------------------------------------------
+! Stampa matrice generica di valori (8 caratteri, 3 decimali)
+!---------------------------------------------------------------
+procedure PrintMatrix(M: array(range,range) of real, title: string, r: integer, c: integer)
+	writeln(title)
+	write("\t")
+	forall(i in 1..c) do
+		write(strfmt(i,8) )
+	end-do
+	writeln
+	forall(i in 1..(8+c*8)) do
+		write("-")
+	end-do
+	writeln
+	forall (i in 1..r) do
+		write(i,")\t")
+		forall(j in 1..c) do
+			write(strfmt(M(i,j),8,-3))
+		end-do
+		writeln
+	end-do
+	writeln
+end-procedure ! PrintMatrix
+
+end-model
+
+
+
+
+
+

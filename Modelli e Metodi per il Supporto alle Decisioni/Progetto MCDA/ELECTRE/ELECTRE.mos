@@ -1,0 +1,167 @@
+model "Metodo ELECTRE I"
+
+!=============================================================================
+! Riceve in ingresso una matrice MCDA (con le sue dimensioni) e un vettore che
+! fornisce peso e direzione dei criteri: il peso dei criteri di minimizzazione
+! � moltiplicato per -1. Inoltre, riceve in ingresso una matrice che specifica
+! l'intervallo di valori possibili per ogni criterio; implicitamente, i valori
+! nella matrice MCDA sono normalizzati dividendoli per la lunghezza del range
+! del criterio.
+! Stampa due matrici A e D, dove A(i,j) e D(i,j) sono gli indici di accordo e
+! di disaccordo per la coppia (ordinata) di alternative (i,j); si pone inoltre
+! (per comodit� d'uso) A(i,i)=0 e D(i,i)=1 per ogni alternativa i.
+! NOTA: vengono stampati gli indici approssimati a 3 decimali e moltiplicati
+! per 1000, cio� gli indici espressi, in millesimi, da numeri interi
+!=============================================================================
+! Versione 10/12/2024
+!=============================================================================
+
+!=============================================================================
+! procedure "forward" 
+! Calcolo indici di accordo e disaccordo
+forward procedure ComputeIndexes
+! Stampa una matrice di indici come interi in [0,1000]
+forward procedure PrintIndexes( S: range, M: array(range,range) of real, title: string )
+
+!=============================================================================
+! Dichiarazioni globali e lettura del file di input
+!=============================================================================
+declarations
+	file: string   
+	n: integer      ! numero di alternative
+	m: integer      ! numero di criteri
+end-declarations
+
+! lettura da terminale del nome del file; il formato DEVE essere ASCII
+writeln
+writeln("Fornire il nome del file di input (senza suffisso .txt)")
+read(file)
+file := file+'.txt'
+writeln
+
+initializations from file
+ n   !numero di righe
+ m   !numero di criteri
+end-initializations
+
+! definizione ranges
+Criteri := (1..m)
+Azioni  := (1..n)
+
+declarations
+! input
+MCMatrix: array(Azioni,Criteri) of real  ! matrice MCDA
+Range: array(Criteri,1..2) of real       ! range di definizione dei criteri
+Weight: array(Criteri) of real           ! pesi e direzioni
+! rappresentazione
+Dir: array(Criteri) of integer           ! direzione criteri
+Width: array(Criteri) of real            ! ampiezza intervallo valutazioni
+d: real                                  ! max differenza tra valori (normalizzati)
+! output 
+A: array(Azioni,Azioni) of real          ! indici di accordo
+D: array(Azioni,Azioni) of real          ! indici di disaccordo
+end-declarations
+
+initializations from file
+ MCMatrix
+ Range
+ Weight
+end-initializations
+
+!=============================================================================
+! INIZIO MAIN
+!=============================================================================
+
+! separazione di direzioni e pesi
+forall(j in Criteri)
+if (Weight(j) < 0) then
+   Weight(j) := -Weight(j)
+   Dir(j) := -1
+else if (Weight(j) > 0) then
+        Dir(j) := 1
+     else  writeln("Errore: non sono ammessi pesi nulli")
+           exit(0)
+     end-if
+end-if
+
+! normalizzazione pesi
+SumOfWeights := sum(j in Criteri) Weight(j)
+forall(j in Criteri) Weight(j) := Weight(j) / SumOfWeights
+
+! calcolo dell'ampiezza dei range delle valutazioni per ogni criterio
+forall(j in Criteri)
+  Width(j) := Range(j,2) - Range(j,1)
+
+! calcolo della massima differenza tra valori normalizzati
+d := max( j in Criteri) ( max(i in Azioni) MCMatrix(i,j) - 
+                          min(i in Azioni) MCMatrix(i,j) ) / Width(j)
+
+ComputeIndexes
+PrintIndexes( Azioni, A, "Indici di Accordo:")
+PrintIndexes( Azioni, D, "Indici di Disaccordo:")
+
+!===============================================================
+! FINE "MAIN"
+!===============================================================
+
+!---------------------------------------------------------------
+! Calcolo indici di accordo e disaccordo
+!---------------------------------------------------------------
+procedure ComputeIndexes
+  forall (i in 1..n) do
+    forall (j in 1..n) do
+      if (i = j) then
+         A(i,i) := 0
+         D(i,i) := 1
+      else ! calcolo indici di accordo e disaccordo per (i,j)
+           A(i,j) := 0
+           D(i,j) := 0
+           forall(h in Criteri) do
+             if (Dir(h) = 1) then ! CRITERIO DI MASSIMIZZAZIONE
+                if (MCMatrix(i,h) >= MCMatrix(j,h))  then
+                   A(i,j) += Weight(h);  ! criterio in ACCORDO
+                else ! criterio in DISACCORDO
+                     dij := ( MCMatrix(j,h) - MCMatrix(i,h) ) / ( d*Width(h) )
+                     if ( dij > D(i,j) ) then
+                        D(i,j) := dij
+                     end-if
+                end-if 
+             end-if ! if (Dir(h) = 1) - MASSIMIZZAZIONE
+             if (Dir(h) = -1) then ! CRITERIO DI MINIMIZZAZIONE
+                if (MCMatrix(i,h) <= MCMatrix(j,h))  then
+                   A(i,j) += Weight(h);  ! criterio in ACCORDO
+                else   ! criterio in DISACCORDO
+                     dij := ( MCMatrix(i,h) - MCMatrix(j,h) ) / ( d*Width(h) )
+                     if ( dij > D(i,j) ) then
+                        D(i,j) := dij
+                     end-if
+                end-if 
+             end-if ! if (Dir(h) = -1) - MINIMIZZAZIONE
+           end-do   ! forall(h in 1..m)
+      end-if ! if (i = j) then - else
+    end-do   ! forall (j in 1..n)
+  end-do   ! forall (i in 1..n)
+end-procedure ! ComputeIndexes
+
+!---------------------------------------------------------------
+! Stampa matrice di indici come valori INTERI in [0,1000]
+!---------------------------------------------------------------
+procedure PrintIndexes( S: range, M: array(range,range) of real, title: string )
+	writeln(title)
+	forall (i in S) do
+		forall(j in S) do
+		    INT := round( M(i,j) * 1000 )
+			write(strfmt(INT,6))
+		end-do
+		writeln
+	end-do
+	writeln
+end-procedure
+
+end-model
+
+
+
+
+
+
